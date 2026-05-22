@@ -22,18 +22,21 @@ ZKBuy 的出发点是：
 
 ## 核心流程
 
-链上主路径是 **用户 → ZWToken 隐私池 → 商户**。手动模式走上方实线；**AI 模式**在下方虚线框内，仅替代「逐步签名发交易」，链上存取仍落在同一隐私池。
+链上主路径是 **用户 → ZWToken 隐私池 → 商户**。**imToken WASM** 是共用的签名层：手动模式由用户直接调用，AI 模式由助理经 Agent Tool 调用，二者对隐私池的链上动作相同。
 
 ```mermaid
 flowchart TB
     U["用户"] --> ZW["ZWToken 隐私池"] --> M["商户"]
 
-    subgraph aiBox["AI 模式（可选）"]
-        direction LR
-        AI["AI 助理"] --> WASM["imToken WASM<br/>Agent Tool · 签名发交易"]
-    end
+    WASM["imToken WASM"]
 
-    WASM -.->|deposit / remint| ZW
+    U -->|手动模式| WASM
+    WASM -->|deposit / remint| ZW
+
+    subgraph aiBox["AI 模式（可选）"]
+        AI["AI 助理"]
+    end
+    AI -->|Agent Tool| WASM
 
     style aiBox fill:#fafbff,stroke:#64748b,stroke-width:2px,stroke-dasharray: 8 6
 ```
