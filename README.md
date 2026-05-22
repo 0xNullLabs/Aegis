@@ -22,27 +22,30 @@ ZKBuy 的出发点是：
 
 ## 核心流程
 
+链上路径始终是 **用户 → ZWToken 隐私池 → 商户**（存、取、付）。手动模式在 Dashboard 逐步发起；**AI 模式不改动这条主链**，仅用对话 + Agent Tools 替代「手动逐步签名发交易」这一步，底层仍经 imToken WASM 与隐私池交互。
+
 ```mermaid
 sequenceDiagram
     participant User as 用户 (Account A)
     participant Pool as ZWToken 隐私池
-    participant ZK as ZK Merkle Proof
     participant Merchant as 商户 (Account B)
+    participant AI as AI 模式
+    participant WASM as imToken WASM
 
     User->>Pool: approve + deposit USDC
-    Note over Pool: 资金进入 Burn 地址 / 匿名集合
-    User->>ZK: 同步 Merkle 树并生成证明
-    ZK->>Pool: remint（取款）
-    Pool->>Merchant: 新地址拨款，完成隐私支付
-    Note over Merchant: 仅见隐私池出账，不见存款地址
-```
+    Note over Pool: 资金进入隐私池
 
-| 阶段 | 说明 |
-|------|------|
-| **派生账户** | 输入密钥短语 → 哈希 → `create_keystore` / `derive_accounts` 得到 Account A（付款）与 Account B（匿名收款） |
-| **存入隐私池** | 将 USDC 存入 ZWToken 合约（`deposit`），资金进入隐私集合 |
-| **生成证明** | 同步匿名 Merkle 树，本地生成 ZK Merkle Proof（约 30–60 秒） |
-| **取款支付** | `remint` 从合约向新地址拨款，完成向商户的隐私支付 |
+    Note over User,Pool: 可先存钱，隔一段时间再支付（增强隐私）
+
+    User->>Pool: remint（取款）
+    Pool->>Merchant: 向匿名地址拨款
+    Note over Merchant: 仅见隐私池出账，不见存款地址
+
+    Note over AI,WASM: 可选：AI 替代手动逐步发交易（链上结果与上图相同）
+    User-->>AI: 自然语言（存钱 / 查余额 / 支付）
+    AI->>WASM: Agent Tool
+    WASM-->>Pool: deposit / remint
+```
 
 ---
 
@@ -51,7 +54,7 @@ sequenceDiagram
 ### 手动模式（Dashboard）
 
 - 输入密钥短语初始化 WASM 钱包
-- **隐私支付**：一键串联 approve → deposit → 同步树 → 证明 → remint
+- **隐私支付**：一键串联 approve → deposit → remint（经 ZWToken 隐私池）
 - 控制台展示各步链上交易哈希（Sepolia Etherscan 可验证）
 - 右上角展示 ETH / USDC 余额
 
@@ -63,7 +66,7 @@ sequenceDiagram
 |------|------|
 | 存钱 | 将固定金额（Demo 为 10 USDC）存入隐私池；支持 USDC `permit` 等路径 |
 | 查看隐私余额 | 查询隐私池中待取款存款 |
-| 取钱 / 支付 | 基于本地 secret 生成 proof 并 `remint` 到匿名地址 |
+| 取钱 / 支付 | 从 ZWToken 隐私池 `remint` 到匿名地址 |
 | 全流程支付 | 存 + 取连续执行（**无时间间隔时隐私较弱**，适合演示） |
 
 推荐用法：先存钱，隔一段时间再让 AI 取钱支付，在隐私与易用性之间取得平衡，而无需用户自己记住每笔存款的 secret。
@@ -77,8 +80,8 @@ sequenceDiagram
 | 前端 | Next.js 16、React 19、Tailwind CSS 4 |
 | 链交互 | ethers v6、Sepolia 测试网 |
 | 钱包 / 签名 | imToken `tcx_wasm`（`create_keystore`、`derive_accounts`、交易签名） |
-| 零知识 | snarkjs、circomlibjs；Merkle 树同步与 Groth16 证明生成 |
-| 合约 | ZWERC20（隐私池）、Circle Sepolia USDC |
+| 隐私池 | ZWToken / ZWERC20（`deposit`、`remint`） |
+| 合约 | ZWERC20、Circle Sepolia USDC |
 | AI | OpenAI 兼容 API + 结构化 `[ACTION:…]` 驱动链上 Tool |
 
 ---
@@ -140,8 +143,8 @@ src/
 ├── lib/
 │   ├── wasm.ts           # imToken WASM 初始化与封装
 │   ├── wallet.ts         # 密钥短语 → keystore → 双账户派生
-│   ├── signer.ts         # approve / deposit / proof / remint 流程
-│   ├── zkProof.ts        # Merkle 树与 ZK 证明
+│   ├── signer.ts         # approve / deposit / remint 流程
+│   ├── zkProof.ts        # 与 ZWToken 隐私池交互的链下辅助逻辑
 │   └── contracts.ts      # Sepolia 合约地址与 ABI
 └── pkg/                  # tcx_wasm 预编译包
 ```
