@@ -1,0 +1,15 @@
+{
+  "name": "tcx-wasm",
+  "type": "module",
+  "version": "0.9.1",
+  "files": [
+    "tcx_wasm_bg.wasm",
+    "tcx_wasm.js",
+    "tcx_wasm.d.ts"
+  ],
+  "main": "tcx_wasm.js",
+  "types": "tcx_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
