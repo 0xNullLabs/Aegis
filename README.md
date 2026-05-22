@@ -22,29 +22,20 @@ ZKBuy 的出发点是：
 
 ## 核心流程
 
-链上路径始终是 **用户 → ZWToken 隐私池 → 商户**（存、取、付）。手动模式在 Dashboard 逐步发起；**AI 模式不改动这条主链**，仅用对话 + Agent Tools 替代「手动逐步签名发交易」这一步，底层仍经 imToken WASM 与隐私池交互。
+链上主路径是 **用户 → ZWToken 隐私池 → 商户**。手动模式走上方实线；**AI 模式**在下方虚线框内，仅替代「逐步签名发交易」，链上存取仍落在同一隐私池。
 
 ```mermaid
-sequenceDiagram
-    participant User as 用户 (Account A)
-    participant Pool as ZWToken 隐私池
-    participant Merchant as 商户 (Account B)
-    participant AI as AI 模式
-    participant WASM as imToken WASM
+flowchart TB
+    U["用户"] --> ZW["ZWToken 隐私池"] --> M["商户"]
 
-    User->>Pool: approve + deposit USDC
-    Note over Pool: 资金进入隐私池
+    subgraph aiBox["AI 模式（可选）"]
+        direction LR
+        AI["AI 助理"] --> WASM["imToken WASM<br/>Agent Tool · 签名发交易"]
+    end
 
-    Note over User,Pool: 可先存钱，隔一段时间再支付（增强隐私）
+    WASM -.->|deposit / remint| ZW
 
-    User->>Pool: remint（取款）
-    Pool->>Merchant: 向匿名地址拨款
-    Note over Merchant: 仅见隐私池出账，不见存款地址
-
-    Note over AI,WASM: 可选：AI 替代手动逐步发交易（链上结果与上图相同）
-    User-->>AI: 自然语言（存钱 / 查余额 / 支付）
-    AI->>WASM: Agent Tool
-    WASM-->>Pool: deposit / remint
+    style aiBox fill:#fafbff,stroke:#64748b,stroke-width:2px,stroke-dasharray: 8 6
 ```
 
 ---
