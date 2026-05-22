@@ -2,7 +2,7 @@
 
 **结合零知识证明与 AI 助手的隐私支付 Demo** —— 让用户在真实支付场景中，不必一直暴露主钱包地址。
 
-基于 [imToken WASM 模块](https://github.com/consenlabs/token-core-monorepo/) 构建，在 Sepolia 测试网上完成真实的链上 ZK 存取款与模拟商户支付（如「麦当劳巨无霸套餐」）。
+基于 [imToken WASM 模块](https://github.com/consenlabs/token-core-monorepo/blob/tenth-anniversary/token-core/tcx-wasm/README.zh-CN.md) 构建，在 Sepolia 测试网上完成真实的链上 ZK 存取款与模拟商户支付（如「麦当劳巨无霸套餐」）。
 
 ---
 
@@ -167,6 +167,6 @@ src/
 ## 相关资源
 
 - [EIP-8065: ZWToken](https://eips.ethereum.org/EIPS/eip-8065)
-- [imToken token-core-x (WASM)](https://github.com/consenlabs/token-core-x)
+- [imToken token-core](https://github.com/consenlabs/token-core-monorepo/blob/tenth-anniversary/token-core/tcx-wasm/README.zh-CN.md)
 
 ---
