@@ -123,14 +123,6 @@ const LLM_API_KEY  = "sk-...";
 const LLM_MODEL    = "gpt-4o";
 ```
 
-### 部署同步（可选）
-
-```bash
-./sync.sh
-```
-
-通过 `rsync` 将代码同步到远程服务器；可在环境变量中设置 `REMOTE_HOST`、`REMOTE_DIR` 等。
-
 ---
 
 ## 项目结构
