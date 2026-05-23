@@ -22,7 +22,50 @@ import { ETHERSCAN_BASE } from "@/lib/contracts";
 const LLM_BASE_URL = "https://api.shubiaobiao.com/v1";
 const LLM_API_KEY  = "sk-hide";
 const LLM_MODEL    = "gpt-4o";
+const DEFAULT_AMOUNT_USDC = "10";
 // ─────────────────────────────────────────────────────────────────
+
+type ActionType = "pay" | "deposit" | "balance" | "remint";
+
+interface ParsedAction {
+  type: ActionType;
+  amount?: string;
+  recipient?: string;
+}
+
+function parseAction(reply: string): ParsedAction | null {
+  const match = reply.match(/\[ACTION:(\w+)([^\]]*)\]/);
+  if (!match) return null;
+  const type = match[1] as ActionType;
+  const paramStr = match[2];
+  const amountMatch = paramStr.match(/amount=([\d.]+)/);
+  const recipientMatch = paramStr.match(/recipient=(0x[a-fA-F0-9]{40})/);
+  return {
+    type,
+    amount: amountMatch?.[1],
+    recipient: recipientMatch?.[1],
+  };
+}
+
+function resolvePaymentParams(
+  action: ParsedAction,
+  defaultRecipient: string,
+): { amount: string; recipient: string } | { error: string } {
+  const amount = action.amount ?? DEFAULT_AMOUNT_USDC;
+  const recipient = action.recipient ?? defaultRecipient;
+
+  if (!/^\d+(\.\d+)?$/.test(amount) || parseFloat(amount) <= 0) {
+    return { error: "无效的金额，请输入正数 USDC 数量。" };
+  }
+  if (!ethers.isAddress(recipient)) {
+    return { error: "无效的收款地址，请提供有效的以太坊地址（0x 开头）。" };
+  }
+  return { amount, recipient: ethers.getAddress(recipient) };
+}
+
+function shortAddress(addr: string) {
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
 
 const FULL_FLOW_STEPS: FlowStep[] = [
   { id: "init",    label: "连接 Sepolia 网络",      status: "pending" },
@@ -67,22 +110,43 @@ interface Props {
 
 // ─── LLM API call（OpenAI 兼容）────────────────────────────────────
 
-function buildSystemPrompt(usdc: string, address: string, hasPendingDeposit: boolean): string {
+function buildSystemPrompt(
+  usdc: string,
+  address: string,
+  defaultRecipient: string,
+  pendingDepositAmount: string | null,
+): string {
+  const pendingStatus = pendingDepositAmount
+    ? `✅ 有待取款的存款（${pendingDepositAmount} USDC）`
+    : "❌ 无存款记录";
+
   return `你是 ZKBuy 的 AI 支付助理，帮助用户通过零知识证明完成隐私支付。
 
 用户当前信息：
 - 钱包地址（Account A）: ${address}
 - USDC 余额: ${usdc} USDC
-- 隐私池存款状态: ${hasPendingDeposit ? "✅ 有待取款的存款（10 USDC）" : "❌ 无存款记录"}
+- 隐私池存款状态: ${pendingStatus}
+
+默认支付设置（用户未特别指定时使用）：
+- 默认金额: ${DEFAULT_AMOUNT_USDC} USDC（麦当劳巨无霸套餐）
+- 默认收款地址（匿名地址 B）: ${defaultRecipient}
 
 支持的操作（在回复**最后一行**单独输出对应标记，其余情况不要输出标记）：
-1. 【全流程支付】一次性完成存钱+生成证明+取钱支付 → [ACTION:pay]
-2. 【存钱】将 10 USDC 存入 ZWToken 隐私池 → [ACTION:deposit]
+1. 【全流程支付】一次性完成存钱+生成证明+取钱支付
+   → [ACTION:pay] 或指定参数 [ACTION:pay amount=5 recipient=0x...]
+2. 【存钱】将 USDC 存入 ZWToken 隐私池
+   → [ACTION:deposit] 或 [ACTION:deposit amount=5]
 3. 【查看隐私余额】查询当前隐私池中的存款状态 → [ACTION:balance]
-4. 【取钱/支付】用零知识证明从隐私池向匿名地址取款（需先存钱）→ [ACTION:remint]
+4. 【取钱/支付】用零知识证明从隐私池向收款地址取款（需先存钱）
+   → [ACTION:remint] 或 [ACTION:remint recipient=0x...]
+
+参数说明：
+- amount: 用户指定的 USDC 金额（数字，如 5 或 10.5）；未指定则用默认 ${DEFAULT_AMOUNT_USDC}
+- recipient: 用户指定的收款地址（0x 开头的 42 位地址）；未指定则用默认 ${defaultRecipient}
+- 取钱时金额以已存入隐私池的数额为准，仅 recipient 可覆盖
 
 注意：取钱操作需要先执行存钱，隐私池存款状态为"无"时请先存钱。
-支付金额固定为 10 USDC（麦当劳巨无霸套餐）。整个流程链上不可追踪。
+用户未指定金额或地址时，按上述默认值执行。整个流程链上不可追踪。
 请用中文回复，简洁友好。`;
 }
 
@@ -90,10 +154,11 @@ async function callLLM(
   history: ChatMessage[],
   usdc: string,
   address: string,
-  hasPendingDeposit: boolean
+  defaultRecipient: string,
+  pendingDepositAmount: string | null,
 ): Promise<string> {
   const messages = [
-    { role: "system", content: buildSystemPrompt(usdc, address, hasPendingDeposit) },
+    { role: "system", content: buildSystemPrompt(usdc, address, defaultRecipient, pendingDepositAmount) },
     ...history
       .filter(m => m.role !== "steps")
       .map(m => ({
@@ -188,9 +253,21 @@ export default function AIModeScreen({ wallet, onPayComplete, onBack }: Props) {
     welcomeSentRef.current = true;
     setMessages([{
       role: "ai",
-      text: `你好！我是 ZKBuy AI 助理 🤖\n\n你当前有 ${usdc} USDC 可用。\n\n支持以下操作：\n• 【存钱】把 USDC 存入零知识隐私池\n• 【查看隐私余额】查询隐私池中的余额\n• 【取钱支付】从隐私池向匿名地址取款\n• 【全流程支付】一次性完成存钱+取钱\n\n链上无法追踪你的钱包与支付的关联 🔐\n\n你想做什么？`,
+      text:
+        `你好！我是 ZKBuy AI 助理 🤖\n\n` +
+        `你当前有 ${usdc} USDC 可用。\n\n` +
+        `默认设置：\n` +
+        `• 支付金额：${DEFAULT_AMOUNT_USDC} USDC（麦当劳巨无霸套餐）\n` +
+        `• 收款地址：${shortAddress(wallet.addressB)}（匿名地址 B）\n\n` +
+        `如需自定义，直接告诉我金额或收款地址即可，例如「存 5 USDC」或「向 0x1234… 取钱支付」。未指定时按默认执行。\n\n` +
+        `支持以下操作：\n` +
+        `• 【存钱】把 USDC 存入零知识隐私池\n` +
+        `• 【查看隐私余额】查询隐私池中的余额\n` +
+        `• 【取钱支付】从隐私池向收款地址取款\n` +
+        `• 【全流程支付】一次性完成存钱+取钱\n\n` +
+        `链上无法追踪你的钱包与支付的关联 🔐\n\n你想做什么？`,
     }]);
-  }, [usdc]);
+  }, [usdc, wallet.addressB]);
 
   // 在 messages 数组末尾插入一条 steps 消息，记录其索引
   function pushStepsMessage(initialSteps: FlowStep[]) {
@@ -230,19 +307,44 @@ export default function AIModeScreen({ wallet, onPayComplete, onBack }: Props) {
     setAiLoading(true);
 
     try {
-      const reply = await callLLM(updated, usdc, wallet.addressA, pendingDeposit !== null);
-      const hasPayAction     = reply.includes("[ACTION:pay]");
-      const hasDepositAction = reply.includes("[ACTION:deposit]");
-      const hasBalanceAction = reply.includes("[ACTION:balance]");
-      const hasRemintAction  = reply.includes("[ACTION:remint]");
-      const displayText = reply.replace(/\[ACTION:\w+\]/g, "").trim();
+      const reply = await callLLM(
+        updated,
+        usdc,
+        wallet.addressA,
+        wallet.addressB,
+        pendingDeposit?.amountUSDC ?? null,
+      );
+      const action = parseAction(reply);
+      const displayText = reply.replace(/\[ACTION:[^\]]+\]/g, "").trim();
 
       setMessages(prev => [...prev, { role: "ai", text: displayText }]);
 
-      if (hasPayAction)          await executeFullPayment();
-      else if (hasDepositAction) await executeDeposit();
-      else if (hasBalanceAction) await executeCheckBalance();
-      else if (hasRemintAction)  await executeRemint();
+      if (!action) return;
+
+      if (action.type === "pay") {
+        const resolved = resolvePaymentParams(action, wallet.addressB);
+        if ("error" in resolved) {
+          setMessages(prev => [...prev, { role: "ai", text: `⚠️ ${resolved.error}` }]);
+          return;
+        }
+        await executeFullPayment(resolved.amount, resolved.recipient);
+      } else if (action.type === "deposit") {
+        const resolved = resolvePaymentParams(action, wallet.addressB);
+        if ("error" in resolved) {
+          setMessages(prev => [...prev, { role: "ai", text: `⚠️ ${resolved.error}` }]);
+          return;
+        }
+        await executeDeposit(resolved.amount);
+      } else if (action.type === "balance") {
+        await executeCheckBalance();
+      } else if (action.type === "remint") {
+        const resolved = resolvePaymentParams(action, wallet.addressB);
+        if ("error" in resolved) {
+          setMessages(prev => [...prev, { role: "ai", text: `⚠️ ${resolved.error}` }]);
+          return;
+        }
+        await executeRemint(resolved.recipient);
+      }
     } catch (err: any) {
       setMessages(prev => [...prev, { role: "ai", text: `❌ AI 连接失败：${err.message}` }]);
     } finally {
@@ -250,7 +352,7 @@ export default function AIModeScreen({ wallet, onPayComplete, onBack }: Props) {
     }
   }
 
-  async function executeFullPayment() {
+  async function executeFullPayment(amountUSDC: string, recipient: string) {
     pushStepsMessage(FULL_FLOW_STEPS);
     setPayState("running");
 
@@ -259,8 +361,8 @@ export default function AIModeScreen({ wallet, onPayComplete, onBack }: Props) {
         keystoreJson: wallet.keystoreJson,
         prfKey: wallet.prfKey,
         addressA: wallet.addressA,
-        addressB: wallet.addressB,
-        amountUSDC: "10",
+        addressB: recipient,
+        amountUSDC,
         onStep: updateStepInMessage,
       });
 
@@ -269,8 +371,8 @@ export default function AIModeScreen({ wallet, onPayComplete, onBack }: Props) {
       setMessages(prev => [...prev, {
         role: "ai",
         text:
-          `✅ 支付成功！\n\n已隐私支付 10 USDC 给麦当劳。\n` +
-          `• 匿名地址：${result.accountB.slice(0, 6)}…${result.accountB.slice(-4)}\n` +
+          `✅ 支付成功！\n\n已隐私支付 ${amountUSDC} USDC。\n` +
+          `• 收款地址：${shortAddress(result.accountB)}\n` +
           `• 存款 TX：${short(result.depositTxHash)}\n` +
           `• 取款 TX：${short(result.remintTxHash)}\n\n` +
           `链上分析无法将此支付追踪至你的钱包 🔐`,
@@ -287,7 +389,7 @@ export default function AIModeScreen({ wallet, onPayComplete, onBack }: Props) {
     }
   }
 
-  async function executeDeposit() {
+  async function executeDeposit(amountUSDC: string) {
     pushStepsMessage(DEPOSIT_STEPS);
     setPayState("running");
 
@@ -296,7 +398,7 @@ export default function AIModeScreen({ wallet, onPayComplete, onBack }: Props) {
         keystoreJson: wallet.keystoreJson,
         prfKey: wallet.prfKey,
         addressA: wallet.addressA,
-        amountUSDC: "10",
+        amountUSDC,
         onStep: updateStepInMessage,
       });
 
@@ -306,11 +408,11 @@ export default function AIModeScreen({ wallet, onPayComplete, onBack }: Props) {
       setMessages(prev => [...prev, {
         role: "ai",
         text:
-          `✅ 存钱成功！\n\n已将 10 USDC 存入零知识隐私池。\n` +
+          `✅ 存钱成功！\n\n已将 ${amountUSDC} USDC 存入零知识隐私池。\n` +
           `• 存款 TX：${short(result.depositTxHash)}\n\n` +
           `存款已记录在本地。随时可以发送「取钱支付」完成匿名支付 🔐`,
       }]);
-      setUsdc(prev => (parseFloat(prev) - 10).toFixed(2));
+      setUsdc(prev => (parseFloat(prev) - parseFloat(amountUSDC)).toFixed(2));
     } catch (err: any) {
       const msg = err.message ?? "未知错误";
       setStepErrorInMessage(msg);
@@ -356,7 +458,7 @@ export default function AIModeScreen({ wallet, onPayComplete, onBack }: Props) {
     }
   }
 
-  async function executeRemint() {
+  async function executeRemint(recipient: string) {
     if (!pendingDeposit) {
       setMessages(prev => [...prev, {
         role: "ai",
@@ -375,7 +477,7 @@ export default function AIModeScreen({ wallet, onPayComplete, onBack }: Props) {
         keystoreJson: wallet.keystoreJson,
         prfKey: wallet.prfKey,
         addressA: wallet.addressA,
-        addressB: wallet.addressB,
+        addressB: recipient,
         privacyAddress: depositSnapshot.privacyAddress,
         addr20: depositSnapshot.addr20,
         q: depositSnapshot.q,
@@ -392,8 +494,8 @@ export default function AIModeScreen({ wallet, onPayComplete, onBack }: Props) {
       setMessages(prev => [...prev, {
         role: "ai",
         text:
-          `✅ 取钱支付成功！\n\n已从隐私池向匿名地址支付 ${depositSnapshot.amountUSDC} USDC。\n` +
-          `• 匿名地址：${wallet.addressB.slice(0, 6)}…${wallet.addressB.slice(-4)}\n` +
+          `✅ 取钱支付成功！\n\n已从隐私池支付 ${depositSnapshot.amountUSDC} USDC。\n` +
+          `• 收款地址：${shortAddress(recipient)}\n` +
           `• 取款 TX：${short(result.remintTxHash)}\n\n` +
           `链上分析无法将此支付追踪至你的钱包 🔐`,
       }]);
